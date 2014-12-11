@@ -1,0 +1,590 @@
+#!/bin/bash
+# vim:set shiftwidth=4 tabstop=4 expandtab:
+
+SCRIPT_FOLDER=$(dirname "$0")
+. $SCRIPT_FOLDER/test-functions
+
+#dvdiso=/srv/ISOs/SLE-12-Server-DVD-x86_64-Beta1-DVD1.iso
+#workdir=/srv/vms/tests/
+
+show_help()
+{
+    cat << EOF
+
+test-lxc -d /path/to/dvd/iso -w /path/to/work/dir [-h]
+
+Test LXC containers creation throught libvirt. This test is designed to be running
+multiple times in parallel with different VM names and IP addresses.
+
+IMPORTANT NOTICES
+  * This test will setup a complete SLES12 VM and is likely to take time.
+  * This test needs to have access to download.suse.de
+
+ARGUMENTS
+
+    -d  Path to the SLES 12 DVD ISO to use for the test Virtual Machine install
+    -w  Path to the directory containing all test data, including VM disk image.
+
+EOF
+}
+
+dvdiso=
+workdir=
+vmname=
+ip=
+
+while getopts "d:hw:" opt; do
+    case "$opt" in
+        d) dvdiso=$OPTARG
+           ;;
+        w) workdir=$OPTARG
+           ;;
+        :) echo "option $OPTARG requires an argument"
+           show_help
+           exit 1
+           ;;
+        h) show_help
+           exit 1
+           ;;
+        *) echo "invalid argument $OPTARG"
+           show_help
+           exit 1
+           ;;
+    esac
+done
+
+# Check that we had all expected arguments
+if test -z "$dvdiso"; then
+    echo "Missing -d DVD ISO image path."
+    exit 1
+fi
+
+if test -z "$workdir"; then
+    echo "Missing -w work directory path."
+    exit 1
+fi
+
+# Check that we can access download.suse.de or test will fail
+nslookup download.suse.de 2>/dev/null 1>&2
+if test "$?" != "0"; then
+   echo "download.suse.de can't be reached: test will fail!"
+   exit 1
+fi
+
+
+# Useful variables
+VIRSH="/usr/bin/virsh --connect lxc:///"
+
+install_libvirt_lxc ()
+{
+    HAS_LIBVIRT_LXC=$(rpm -qa libvirt-daemon-driver-lxc* | wc -l)
+    if test $HAS_LIBVIRT_LXC -eq 0; then
+        zypper install libvirt-daemon-lxc
+        systemctl restart libvirtd
+    fi
+}
+
+create_rootfs ()
+{
+    ROOTFS=$1
+
+    if test -d "$ROOTFS"; then
+        echo "Reusing $ROOTFS as rootfs for the container"
+        # No need to undefine the previous container: it was transient
+    else
+        echo "Creating rootfs for the container"
+        zypper --root "$ROOTFS" --non-interactive --no-gpg-checks ar -c $dvdiso main-repo
+        zypper --root "$ROOTFS" --non-interactive --no-gpg-checks refresh
+        PRODUCT=$(zypper -x --root "$ROOTFS" products | xmllint --xpath 'string(/stream/product-list/product/@name)' -)
+        case $PRODUCT in
+            openSUSE)
+                zypper --root "$ROOTFS" --non-interactive in --no-recommends --auto-agree-with-licenses -t pattern base
+                ;;
+            SLE*)
+                zypper --root "$ROOTFS" --non-interactive in --no-recommends --auto-agree-with-licenses -t pattern Minimal
+                ;;
+            *)
+                echo "Unhandled distribution: $PRODUCT"
+                exit 1
+                ;;
+        esac
+    fi
+}
+
+start_net ()
+{
+    # Make sure the default network is defined
+    net_defined=$($VIRSH net-list --all | grep " default " | wc -l)
+    if test $net_defined -eq 0; then
+        if test ! -e /usr/share/libvirt/networks/default.xml; then
+            echo "Installing libvirt-daemon-config-network"
+            zypper install libvirt-daemon-config-network
+        fi
+        $VIRSH net-define /usr/share/libvirt/networks/default.xml
+        if test "$?" != "0"; then
+            return 1
+        fi
+    fi
+    
+     # Make sure the default network is started
+    net_started=$($VIRSH net-list | grep " default " | wc -l)
+    if test $net_started -eq 0; then
+        echo "Starting 'default' network"
+        $VIRSH net-start default
+        return $?
+    fi
+
+    return 0
+}
+
+init_env ()
+{
+    # Clean workdir
+    if test -d $workdir; then
+        echo "Cleaning up workspace"
+        rm -r $workdir/*
+    fi
+
+    # Make sure libvirt lxc driver is installed on the test machine
+    install_libvirt_lxc 
+
+    # Is AppArmor started?
+    APPARMOR_STATUS=$(systemctl is-active apparmor)
+    if test "$APPARMOR_STATUS" = "inactive"; then
+        systemctl start apparmor
+        systemctl restart libvirtd
+    fi
+
+    ROOTFS=$workdir/rootfs
+    create_rootfs $ROOTFS
+    if test "$?" != "0"; then
+        echo "Failed to create rootfs"
+        return 1
+    fi
+
+    start_net
+    if test "$?" != "0"; then
+        echo "Failed to start default network"
+        return 1
+    fi
+}
+
+# create_config
+#
+# Generate the container configuration
+#
+# $1 - TEST_NAME: the name of the test. Will also be used as
+#      the name of the container.
+# $2 - INIT_TASK: the path to the application to run when
+#      starting the container. Default: '/sbin/init'
+# $3 - SECMODEL: the security model to use for the container.
+#      Can be one of 'none' or 'apparmor'. Note that AppArmor
+#      may not be handled by the host running the test.
+#      Default: 'none'
+create_config ()
+{
+    # Defaults
+    INIT_TASK="/sbin/init"
+    SECMODEL='none'
+
+    TEST_NAME=$1
+    ROOTFS=$workdir/rootfs
+    CONFIG_FN=''
+    if test $# -ge 2; then
+        INIT_TASK=$2
+    fi
+    if test $# -ge 3; then
+        SECMODEL=$3
+    fi
+
+    case $SECMODEL in
+        apparmor)
+            SECLABEL="<seclabel type='dynamic' model='apparmor'/>"
+            ;;
+        *)
+            SECLABEL="<seclabel type='none'/>"
+            ;;
+    esac
+
+    cat > $workdir/${TEST_NAME}.xml << EOF
+<domain type='lxc'>
+  <name>$TEST_NAME</name>
+  <memory unit='KiB'>524288</memory>
+  <currentMemory unit='KiB'>524288</currentMemory>
+  <vcpu>1</vcpu>
+  <os>
+    <type arch='x86_64'>exe</type>
+    <init>$INIT_TASK</init>
+  </os>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>restart</on_crash>
+  <devices>
+    <emulator>/usr/lib64/libvirt/libvirt_lxc</emulator>
+    <filesystem>
+      <source dir='$ROOTFS'/>
+      <target dir='/'/>
+    </filesystem>
+    <interface type='network'>
+      <source network='default'/>
+    </interface>
+    <console type='pty'/>
+  </devices>
+  $SECLABEL
+</domain>
+EOF
+}
+
+RESULT=0
+
+# default_setup
+#
+# Setup the container under test.
+#
+# $1 - TEST_NAME: the name of the test. Will also be used as
+#      the name of the container.
+default_setup()
+{
+    TEST_NAME=$1
+
+    # Remove the previous log to get more accurate error reporting
+    rm /var/log/libvirt/lxc/${TEST_NAME}.log 2>/dev/null
+
+    # Prepare the container under test
+    $VIRSH create $workdir/${TEST_NAME}.xml
+    if test "$?" != "0"; then
+        echo "Failed to create container"
+        grep 'error : ' /var/log/libvirt/lxc/${TEST_NAME}.log
+        return 1
+    fi
+    return 0
+}
+
+# default_teardown
+#
+# Cleanup the container under test.
+#
+# $1 - TEST_NAME: the name of the test.
+default_teardown()
+{
+    TEST_NAME=$1
+
+    # cleanup the container even if the test failed
+    $VIRSH destroy $TEST_NAME 
+    if test "$?" != "0"; then
+        echo "Failed to destroy container"
+        return 1
+    fi
+}
+
+distro_nosec_setup ()
+{
+    TEST_NAME=$1
+    create_config $TEST_NAME "/sbin/init" "none"
+    default_setup $TEST_NAME
+}
+
+distro_nosec_teardown ()
+{
+    default_teardown $1
+}
+
+distro_nosec_check ()
+{
+    TEST_NAME=$1
+
+    CONTROLLER_PID=$($VIRSH domid $TEST_NAME)
+    PROCESS_PID=$(ps -o pid --ppid $CONTROLLER_PID --no-header | tr -d ' ')
+
+    AA_PROFILE=$(cat /proc/$PROCESS_PID/attr/current)
+
+    # Check that the processes are unconfined
+    assert "Container process not unconfined" "unconfined" "$AA_PROFILE"
+    if test "$?" != "0"; then
+        return 1
+    fi
+
+    # Sleep a bit to give time to the container to start before checking it
+    sleep 2
+
+    # Check that the whole distro has started
+    CHILDREN_PS=$(ps --ppid $PROCESS_PID -h)
+    assert_match "/sbin/init has no child processes" "/^.\+$/" "$CHILDREN_PS"
+}
+
+distro_apparmor_setup ()
+{
+    TEST_NAME=$1
+    create_config $TEST_NAME "/sbin/init" "apparmor"
+    default_setup $TEST_NAME
+}
+
+distro_apparmor_teardown ()
+{
+    default_teardown $1
+}
+
+distro_apparmor_check ()
+{
+    TEST_NAME=$1
+
+    CONTROLLER_PID=$($VIRSH domid $TEST_NAME)
+    PROCESS_PID=$(ps -o pid --ppid $CONTROLLER_PID --no-header | tr -d ' ')
+    UUID=$($VIRSH domuuid $TEST_NAME)
+
+    # Check that we have the profile enforced
+    AA_PROFILE=$(cat /proc/$PROCESS_PID/attr/current)
+
+    assert "Wrong container process profile" "libvirt-$UUID (enforce)" "$AA_PROFILE"
+    if test "$?" != "0"; then
+        return 1
+    fi
+
+    # Check that the whole distro has started
+    CHILDREN_PS=$(ps --ppid $PROCESS_PID -h)
+    assert_match "/sbin/init has no child processes" "/^.\+$/" "$CHILDREN_PS"
+}
+
+keep_mknod_setup ()
+{
+    TEST_NAME=$1
+
+    create_config $TEST_NAME "/bin/bash" "none"
+
+    # Custom configuration for the test
+    CONFIG=$workdir/${TEST_NAME}.xml
+    CAPS=$(cat << EOF
+  <features>
+    <capabilities policy='default'>
+      <mknod state='on'/>
+    </capabilities>
+  </features>
+EOF
+)
+    insert_before "$CONFIG" "/<devices>/" "$CAPS"
+
+    default_setup $TEST_NAME
+}
+
+keep_mknod_teardown ()
+{
+    default_teardown $1
+}
+
+keep_mknod_check ()
+{
+    TEST_NAME=$1
+
+    # Make sure pscap is installed
+    if test ! -e "/usr/bin/pscap"; then
+        zypper install libcap-ng-utils
+    fi
+
+    CONTROLLER_PID=$($VIRSH domid $TEST_NAME)
+    CAPS=$(pscap | grep "^$CONTROLLER_PID")
+    assert_match "mknod capability not kept on container" \
+                 "/ mknod,/" "$CAPS" 
+}
+
+caps_allow_setup ()
+{
+    TEST_NAME=$1
+    
+    create_config $TEST_NAME "/bin/bash" "none"
+
+    # Custom configuration for the test
+    CONFIG=$workdir/${TEST_NAME}.xml
+    CAPS=$(cat << EOF
+  <features>
+    <capabilities policy='allow'/>
+  </features>
+EOF
+)
+
+    insert_before "$CONFIG" "/<devices>/" "$CAPS"
+
+    default_setup $TEST_NAME
+}
+
+caps_allow_teardown ()
+{
+    default_teardown $1 
+}
+
+caps_allow_check ()
+{
+    TEST_NAME=$1
+
+    # Make sure pscap is installed
+    if test ! -e "/usr/bin/pscap"; then
+        zypper install libcap-ng-utils
+    fi
+
+    CONTROLLER_PID=$($VIRSH domid $TEST_NAME)
+    CAPS=$(pscap | grep "^$CONTROLLER_PID")
+    assert_match "No full capabilities on container" \
+                 "/full$/" "$CAPS"
+}
+
+ifname_setup ()
+{
+    TEST_NAME=$1
+
+    create_config $TEST_NAME "/bin/bash" "none"
+
+    # Custom configuration for the test
+    CONFIG=$workdir/${TEST_NAME}.xml
+    NETCFG=$(cat << EOF
+      <guest dev='myeth0'/>
+EOF
+)
+
+    insert_before "$CONFIG" "/<source network=/" "$NETCFG"
+
+    default_setup $TEST_NAME
+}
+
+ifname_teardown ()
+{
+    default_teardown $1
+}
+
+ifname_check ()
+{
+    TEST_NAME=$1
+
+    $VIRSH lxc-enter-namespace --noseclabel $TEST_NAME \
+          --cmd /usr/bin/test -e /proc/sys/net/ipv4/conf/myeth0
+
+    assert "/proc/sys/net/ipv4/conf/myeth0 doesn't exist" "0" "$?"
+}
+
+distro_userns_setup ()
+{
+    TEST_NAME=$1
+
+    create_config $TEST_NAME "/sbin/init" "none"
+
+    # Custom configuration for the test
+    CONFIG=$workdir/${TEST_NAME}.xml
+    IDMAP=$(cat << EOF
+  <idmap>
+    <uid start='0' target='1000' count='100'/>
+    <gid start='0' target='100' count='100'/>
+  </idmap>
+EOF
+)
+    insert_before "$CONFIG" "/<on_poweroff>/" "$IDMAP"
+
+    # Change rootfs ownership
+    chown 1000:100 "$workdir/rootfs"
+
+    default_setup $TEST_NAME
+}
+
+distro_userns_teardown ()
+{
+    default_teardown $1
+    chown root:root "$workdir/rootfs"
+}
+
+distro_userns_check ()
+{
+    TEST_NAME=$1
+
+    CONTROLLER_PID=$($VIRSH domid $TEST_NAME)
+    PROCESS_PID=$(ps -o pid --ppid $CONTROLLER_PID --no-header | tr -d ' ')
+
+    UIDMAP=$(cat /proc/$PROCESS_PID/uid_map | sed -e 's/ \+/ /g')
+    GIDMAP=$(cat /proc/$PROCESS_PID/gid_map | sed -e 's/ \+/ /g')
+
+    # Check that the mapping is applied
+    assert "Wrong uid mapping" " 0 1000 100" "$UIDMAP"
+    if test "$?" != "0"; then
+        return 1
+    fi
+
+    assert "Wrong gid mapping" " 0 100 100" "$GIDMAP"
+    if test "$?" != "0"; then
+        return 1
+    fi
+
+    # Sleep a bit to give time to the container to start before checking it
+    sleep 2
+
+    # Check that the whole distro has started
+    CHILDREN_PS=$(ps --ppid $PROCESS_PID -h)
+    assert_match "/sbin/init has no child processes" "/^.\+$/" "$CHILDREN_PS"
+}
+
+distro_ip_setup ()
+{
+    TEST_NAME=$1
+    ROOTFS=$workdir/rootfs
+
+    # Make sure we have iproute2 in the container
+    zypper --root "$ROOTFS" --non-interactive install iproute2
+
+    # Create a ifcfg-eth0
+    cat > $ROOTFS/etc/sysconfig/network/ifcfg-eth0 << EOF
+STARTMODE=auto
+BOOTPROTO=dhcp
+EOF
+
+    # Normal config
+    create_config $TEST_NAME "/sbin/init" "none"
+    default_setup $TEST_NAME
+}
+
+distro_ip_teardown ()
+{
+    # Delete ifcfg-eth0
+    ROOTFS=$workdir/rootfs
+    rm $ROOTFS/etc/sysconfig/network/ifcfg-eth0
+    default_teardown $1
+}
+
+distro_ip_check ()
+{
+    TEST_NAME=$1
+
+    TRY="0"
+    RESULT=1
+    while test $TRY -lt 30; do
+        IP=$($VIRSH lxc-enter-namespace --noseclabel $TEST_NAME \
+             /sbin/ip -f inet a show eth0)
+        assert_match "No IP set" "/ inet /" "$IP"
+        RESULT=$?
+        if test $RESULT -eq 0; then
+            return 0
+        fi
+        TRY=$(expr $TRY + 1)
+        sleep 1s
+    done
+    return 1
+}
+
+init_env
+
+TESTS="distro_nosec \
+      distro_apparmor \
+      keep_mknod \
+      caps_allow \
+      ifname \
+      distro_userns \
+      distro_ip"
+
+
+for TEST in $TESTS; do
+    run_test "$TEST"
+    if test "$?" != "0"; then
+        RESULT=1
+    fi
+done
+
+if test "$APPARMOR_STATUS" = "inactive"; then
+    systemctl stop apparmor
+    systemctl restart libvirtd
+fi
+
+exit $RESULT

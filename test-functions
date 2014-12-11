@@ -1,0 +1,125 @@
+#!/bin/bash
+# vim:set shiftwidth=4 tabstop=4 expandtab:
+
+# insert_before
+#
+# Insert a string before a given sed address in a file.
+# Note that if the address matches several places in the file,
+# the text will be added several times.
+#
+# $1 - FILE: the file to insert the text to
+# $2 - ADDRESS: the sed address
+# $3 - INSERTED: the text to insert before each the address
+insert_before ()
+{
+    FILE="$1"
+    ADDRESS="$2"
+    INSERTED="$3"
+
+    echo -e "$INSERTED" > "${FILE}.part"
+
+    sed -i "$ADDRESS {
+        h
+        r ${FILE}.part
+        g
+        N }" "$FILE"
+
+    rm "${FILE}.part"
+}
+
+# assert
+#
+# Assert that a value equals the expected one
+#
+# $1 - FAIL_MSG: message echoed when assertion fails
+# $2 - EXPECTED: the expected  value
+# $3 - ACTUAL: the actual value
+#
+# Returns 0 if suceeded, 1 otherwise.
+assert ()
+{
+    if test "$2" != "$3"; then
+        echo "$1 (expected[$2] - actual[$3])"
+        return 1
+    fi
+    return 0
+}
+
+# assert_match
+#
+# Assert that a value is matching a regex
+#
+# $1 - FAIL_MSG: message echoed when assertion fails
+# $2 - REGEX: the regular expression to search for
+# $3 - STRING: the string value to search in
+#
+# Returns 0 if suceeded, 1 otherwise.
+assert_match ()
+{
+    MATCHES=$(echo -e "$3" | sed -n "${2}p")
+    if test -z "$MATCHES"; then
+        echo "$1 ([$3] didn't match '$2')"
+        return 1
+    fi
+
+    return 0
+}
+
+# function_defined
+#
+# Check if a function is defined or not.
+#
+# $1 - FN_NAME: the function name to look for
+#
+# Returns 0 if defined, 1 otherwise
+function_defined ()
+{
+    typeset -f $1 >/dev/null
+    return $?
+}
+
+# run_test
+#
+# Setup a test fixture, run the test and clean it up. A test
+# is defined by:
+#  * its name
+#  * a <testname>_check function performing the verifications
+#  * an optional <testname>_setup function setting up the SUT
+#  * an optional <testname>_teardown function cleaning up the SUT
+# Each of these functions will get the test name as first parameter.
+# The setup function has to return 0 in case of success, 1 in case of
+# failure.
+#
+# $1 - TEST_NAME: the name of the test. Will also be used as
+#      the name of the container.
+run_test ()
+{
+    TEST_NAME=$1
+
+    RUN_RESULT=0
+    echo -e "\n--------\n$TEST_NAME\n--------"
+    if function_defined ${TEST_NAME}_setup; then
+        ${TEST_NAME}_setup $TEST_NAME
+        if test "$?" != "0"; then
+            RUN_RESULT=1
+        fi
+    fi
+
+    # Run the checks on the container
+    if test "$RUN_RESULT" == "0"; then
+        ${TEST_NAME}_check $TEST_NAME
+        RUN_RESULT=$?
+    fi
+
+    if function_defined ${TEST_NAME}_teardown; then
+        ${TEST_NAME}_teardown $TEST_NAME
+    fi
+    
+    if test "$RUN_RESULT" != "0"; then
+        echo "-> FAIL"
+        return 1
+    fi
+
+    echo "-> OK"
+    return 0
+}
