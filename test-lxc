@@ -64,13 +64,6 @@ if test -z "$workdir"; then
     exit 1
 fi
 
-# Check that we can access download.suse.de or test will fail
-nslookup download.suse.de 2>/dev/null 1>&2
-if test "$?" != "0"; then
-   echo "download.suse.de can't be reached: test will fail!"
-   exit 1
-fi
-
 
 # Useful variables
 VIRSH="/usr/bin/virsh --connect lxc:///"
