@@ -31,7 +31,8 @@ insert_before ()
 #
 # Assert that a value equals the expected one
 #
-# $1 - FAIL_MSG: message echoed when assertion fails
+# $1 - FAIL_MSG: message echoed when assertion fails.
+#      If empty, nothing will be echoed.
 # $2 - EXPECTED: the expected  value
 # $3 - ACTUAL: the actual value
 #
@@ -39,7 +40,9 @@ insert_before ()
 assert ()
 {
     if test "$2" != "$3"; then
-        echo "$1 (expected[$2] - actual[$3])"
+        if test -n "$1"; then
+            echo "$1 (expected[$2] - actual[$3])"
+        fi
         return 1
     fi
     return 0
@@ -49,7 +52,8 @@ assert ()
 #
 # Assert that a value is matching a regex
 #
-# $1 - FAIL_MSG: message echoed when assertion fails
+# $1 - FAIL_MSG: message echoed when assertion fails.
+#      If empty, nothing will be echoed.
 # $2 - REGEX: the regular expression to search for
 # $3 - STRING: the string value to search in
 #
@@ -58,7 +62,9 @@ assert_match ()
 {
     MATCHES=$(echo -e "$3" | sed -n "${2}p")
     if test -z "$MATCHES"; then
-        echo "$1 ([$3] didn't match '$2')"
+        if test -n "$1"; then
+            echo "$1 ([$3] didn't match '$2')"
+        fi
         return 1
     fi
 

@@ -546,7 +546,7 @@ distro_ip_check ()
     while test $TRY -lt 30; do
         IP=$($VIRSH lxc-enter-namespace --noseclabel $TEST_NAME \
              /sbin/ip -f inet a show eth0)
-        assert_match "No IP set" "/ inet /" "$IP"
+        assert_match "" "/ inet /" "$IP"
         RESULT=$?
         if test $RESULT -eq 0; then
             return 0
@@ -554,6 +554,7 @@ distro_ip_check ()
         TRY=$(expr $TRY + 1)
         sleep 1s
     done
+    echo "No IP set"
     return 1
 }
 
