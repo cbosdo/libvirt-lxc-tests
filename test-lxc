@@ -75,6 +75,12 @@ install_libvirt_lxc ()
         zypper install libvirt-daemon-lxc
         systemctl restart libvirtd
     fi
+
+    # Is libvirtd started?
+    LIBVIRTD_STATUS=$(systemctl is-active libvirtd)
+    if test "$LIBVIRTD_STATUS" = "inactive"; then
+        systemctl start libvirtd
+    fi
 }
 
 create_rootfs ()
@@ -119,7 +125,7 @@ start_net ()
         fi
     fi
     
-     # Make sure the default network is started
+    # Make sure the default network is started
     net_started=$($VIRSH net-list | grep " default " | wc -l)
     if test $net_started -eq 0; then
         echo "Starting 'default' network"
@@ -143,9 +149,15 @@ init_env ()
 
     # Is AppArmor started?
     APPARMOR_STATUS=$(systemctl is-active apparmor)
+    APPARMOR_HAS_LIBVIRT=$(aa-status | grep libvirtd)
     if test "$APPARMOR_STATUS" = "inactive"; then
         systemctl start apparmor
         systemctl restart libvirtd
+    else
+        if test -z "$APPARMOR_HAS_LIBVIRT"; then
+            systemctl restart apparmor
+            systemctl restart libvirtd
+        fi
     fi
 
     ROOTFS=$workdir/rootfs
@@ -159,6 +171,29 @@ init_env ()
     if test "$?" != "0"; then
         echo "Failed to start default network"
         return 1
+    fi
+}
+
+restore_env ()
+{
+    if test "$APPARMOR_STATUS" = "inactive"; then
+        systemctl stop apparmor
+    else
+        systemctl restart apparmor
+    fi
+
+    if test "$LIBVIRTD_STATUS" = "inactive"; then
+        systemctl stop libvirtd
+    else
+        systemctl restart libvirtd
+
+        if test $net_started -eq 0; then
+            $VIRSH net-destroy default
+        fi
+
+        if test $net_defined -eq 0; then
+            $VIRSH net-undefine default
+        fi
     fi
 }
 
@@ -560,6 +595,8 @@ distro_ip_check ()
 
 init_env
 
+trap "restore_env" EXIT HUP INT QUIT TERM
+
 TESTS="distro_nosec \
       distro_apparmor \
       keep_mknod \
@@ -575,10 +612,5 @@ for TEST in $TESTS; do
         RESULT=1
     fi
 done
-
-if test "$APPARMOR_STATUS" = "inactive"; then
-    systemctl stop apparmor
-    systemctl restart libvirtd
-fi
 
 exit $RESULT
