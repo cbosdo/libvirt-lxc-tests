@@ -577,13 +577,13 @@ distro_ip_check ()
     TEST_NAME=$1
 
     TRY="0"
-    RESULT=1
+    CHECK_RESULT=1
     while test $TRY -lt 30; do
         IP=$($VIRSH lxc-enter-namespace --noseclabel $TEST_NAME \
              /sbin/ip -f inet a show eth0)
         assert_match "" "/ inet /" "$IP"
-        RESULT=$?
-        if test $RESULT -eq 0; then
+        CHECK_RESULT=$?
+        if test $CHECK_RESULT -eq 0; then
             return 0
         fi
         TRY=$(expr $TRY + 1)
@@ -608,7 +608,7 @@ TESTS="distro_nosec \
 
 for TEST in $TESTS; do
     run_test "$TEST"
-    if test "$?" != "0"; then
+    if test $? -ne 0; then
         RESULT=1
     fi
 done
