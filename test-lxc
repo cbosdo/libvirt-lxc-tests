@@ -593,6 +593,64 @@ distro_ip_check ()
     return 1
 }
 
+distro_ipconfig_setup ()
+{
+    TEST_NAME=$1
+    ROOTFS=$workdir/rootfs
+
+    # Make sure we have iproute2 in the container
+    zypper --root "$ROOTFS" --non-interactive install iproute2
+
+    create_config $TEST_NAME "/sbin/init" "none"
+
+    # Custom configuration for the test
+    CONFIG=$workdir/${TEST_NAME}.xml
+    IPS=$(cat << EOF
+      <ip address='192.168.122.5' family='ipv4' prefix='24'/>
+      <ip address='192.168.122.6' family='ipv4' prefix='24'/>
+      <route family='ipv4' via='192.168.122.1'/>
+      <route family='ipv4' via='192.168.122.1' address='192.168.125.0' prefix='24'/>
+EOF
+)
+    insert_before "$CONFIG" "/<\/interface>/" "$IPS"
+    default_setup $TEST_NAME
+}
+
+distro_ipconfig_teardown ()
+{
+    default_teardown $1
+}
+
+distro_ipconfig_check ()
+{
+    TEST_NAME=$1
+
+    # Check ips
+    IPS=$($VIRSH lxc-enter-namespace --noseclabel $TEST_NAME \
+         /sbin/ip -f inet a show eth0)
+    assert_match "192.168.122.5/24 IP not set" "/192\.168\.122\.5\/24/" "$IPS"
+    if test $? -ne 0; then
+        return 1
+    fi
+
+    assert_match "192.168.122.6/24 IP not set" "/192\.168\.122\.6\/24/" "$IPS"
+    if test $? -ne 0; then
+        return 1
+    fi
+
+    # Check routes
+    ROUTES=$($VIRSH lxc-enter-namespace --noseclabel $TEST_NAME \
+             /sbin/ip route)
+    assert_match "default route not set" \
+                 "/default via 192\.168\.122\.1 dev eth0/" "$ROUTES"
+    if test $? -ne 0; then
+        return 1
+    fi
+
+    assert_match "192.168.125.0/24 route not set" \
+                 "/192\.168\.125\.0\/24 via 192\.168\.122\.1 dev eth0/" "$ROUTES"
+}
+
 init_env
 
 trap "restore_env" EXIT HUP INT QUIT TERM
@@ -603,7 +661,8 @@ TESTS="distro_nosec \
       caps_allow \
       ifname \
       distro_userns \
-      distro_ip"
+      distro_ip \
+      distro_ipconfig"
 
 
 for TEST in $TESTS; do
