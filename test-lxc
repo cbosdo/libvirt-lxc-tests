@@ -1,11 +1,27 @@
 #!/bin/bash
 # vim:set shiftwidth=4 tabstop=4 expandtab:
+#
+#    test-lxc script for automated libvirt-lxc integration tests
+#    Copyright (C) 2014 Cédric Bosdonnat
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
 
 SCRIPT_FOLDER=$(dirname "$0")
 . $SCRIPT_FOLDER/test-functions
 
-#dvdiso=/srv/ISOs/SLE-12-Server-DVD-x86_64-Beta1-DVD1.iso
-#workdir=/srv/vms/tests/
 
 show_help()
 {
@@ -16,13 +32,9 @@ test-lxc -d /path/to/dvd/iso -w /path/to/work/dir [-h]
 Test LXC containers creation throught libvirt. This test is designed to be running
 multiple times in parallel with different VM names and IP addresses.
 
-IMPORTANT NOTICES
-  * This test will setup a complete SLES12 VM and is likely to take time.
-  * This test needs to have access to download.suse.de
-
 ARGUMENTS
 
-    -d  Path to the SLES 12 DVD ISO to use for the test Virtual Machine install
+    -d  Path to the SLES 12 or openSUSE DVD ISO to use for the rootfs creation
     -w  Path to the directory containing all test data, including VM disk image.
 
 EOF
