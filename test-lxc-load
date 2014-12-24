@@ -1,0 +1,124 @@
+#!/bin/bash
+# vim:set shiftwidth=4 tabstop=4 expandtab:
+#
+#    test-lxc script for automated libvirt-lxc integration tests
+#    Copyright (C) 2014 Cédric Bosdonnat
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+
+SCRIPT_FOLDER=$(dirname "$0")
+. $SCRIPT_FOLDER/test-functions
+. $SCRIPT_FOLDER/libvirt-utils
+
+show_help()
+{
+    cat << EOF
+
+test-lxc -d /path/to/dvd/iso -w /path/to/work/dir -n numcontainers [-h]
+
+Test LXC containers creation throught libvirt.
+
+ARGUMENTS
+
+    -d  Path to the SLES 12 or openSUSE DVD ISO to use for the rootfs creation
+    -w  Path to the directory containing all test data, including VM disk image.
+    -n  Number of containers to start by the test/
+
+EOF
+}
+
+dvdiso=
+workdir=
+nbcontainers=10
+
+while getopts "d:hw:n:" opt; do
+    case "$opt" in
+        d) dvdiso=$OPTARG
+           ;;
+        w) workdir=$OPTARG
+           ;;
+        n) nbcontainers=$OPTARG
+           ;;
+        :) echo "option $OPTARG requires an argument"
+           show_help
+           exit 1
+           ;;
+        h) show_help
+           exit 1
+           ;;
+        *) echo "invalid argument $OPTARG"
+           show_help
+           exit 1
+           ;;
+    esac
+done
+
+# Check that we had all expected arguments
+if test -z "$dvdiso"; then
+    echo "Missing -d DVD ISO image path."
+    exit 1
+fi
+
+if test -z "$workdir"; then
+    echo "Missing -w work directory path."
+    exit 1
+fi
+
+# Cleanup previous workdir
+if test -e "$workdir"; then
+    rm -rf "$workdir"
+fi
+
+# Create all containers
+I=0
+while test $I -lt $nbcontainers; do
+    NAME="container_$I"
+
+    # Cache the rootfs if needed
+    if test ! -e "$workdir/cache"; then
+        create_rootfs "$workdir/cache" "$dvdiso"
+    fi
+    rsync -Ha "$workdir/cache/" "$workdir/$NAME"
+    create_config "$workdir/$NAME" "$NAME" /sbin/init apparmor
+
+    rm /var/log/libvirt/lxc/${NAME}.log 2>/dev/null
+
+    # Define and start transient container
+    $VIRSH create $workdir/${NAME}.xml
+    if test "$?" != "0"; then
+        echo "Failed to create container"
+        grep 'error : ' /var/log/libvirt/lxc/${NAME}.log
+    fi
+
+    # Make sure the container has finished starting
+    TRY="0"
+    while test $TRY -lt 15; do
+        STARTED=$($VIRSH lxc-enter-namespace $NAME --cmd \
+                         /usr/bin/systemctl is-active default.target i2>/dev/null)
+        if test "$STARTED" == "active"; then
+            break
+        fi
+        sleep 1s
+        TRY=$(expr $TRY + 1)
+    done
+
+    # Extract a few useful data about the container start
+    $VIRSH lxc-enter-namespace $NAME --cmd /usr/bin/systemd-analyze time >"$workdir/${NAME}.data"
+
+    I=$(expr $I + 1)
+done
+
+# TODO Find something to check
