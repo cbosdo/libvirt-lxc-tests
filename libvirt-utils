@@ -1,0 +1,223 @@
+#!/bin/bash
+# vim:set shiftwidth=4 tabstop=4 expandtab:
+#
+#    test-lxc script for automated libvirt-lxc integration tests
+#    Copyright (C) 2014 Cédric Bosdonnat
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+# create_rootfs
+#
+# Creates the container root filesystem from an install DVD
+#
+# $1 - ROOTFS: path where to create the root file system
+# $2 - ISODVD: the URL to the ISO image to feed zypper
+create_rootfs ()
+{
+    ROOTFS=$1
+    DVDISO=$2
+
+    if test -d "$ROOTFS"; then
+        echo "Reusing $ROOTFS as rootfs for the container"
+        # No need to undefine the previous container: it was transient
+    else
+        echo "Creating rootfs for the container"
+        zypper --root "$ROOTFS" --non-interactive --no-gpg-checks ar -c $DVDISO main-repo
+        zypper --root "$ROOTFS" --non-interactive --no-gpg-checks refresh
+        PRODUCT=$(zypper -x --root "$ROOTFS" products | xmllint --xpath 'string(/stream/product-list/product/@name)' -)
+        case $PRODUCT in
+            openSUSE)
+                zypper --root "$ROOTFS" --non-interactive in --no-recommends --auto-agree-with-licenses -t pattern base
+                ;;
+            SLE*)
+                zypper --root "$ROOTFS" --non-interactive in --no-recommends --auto-agree-with-licenses -t pattern Minimal
+                ;;
+            *)
+                echo "Unhandled distribution: $PRODUCT"
+                exit 1
+                ;;
+        esac
+    fi
+}
+
+# Useful variables
+VIRSH="/usr/bin/virsh --connect lxc:///"
+
+install_libvirt_lxc ()
+{
+    HAS_LIBVIRT_LXC=$(rpm -qa libvirt-daemon-driver-lxc* | wc -l)
+    if test $HAS_LIBVIRT_LXC -eq 0; then
+        zypper install libvirt-daemon-lxc
+        systemctl restart libvirtd
+    fi
+
+    # Is libvirtd started?
+    LIBVIRTD_STATUS=$(systemctl is-active libvirtd)
+    if test "$LIBVIRTD_STATUS" = "inactive"; then
+        systemctl start libvirtd
+    fi
+}
+
+start_net ()
+{
+    # Make sure the default network is defined
+    net_defined=$($VIRSH net-list --all | grep " default " | wc -l)
+    if test $net_defined -eq 0; then
+        if test ! -e /usr/share/libvirt/networks/default.xml; then
+            echo "Installing libvirt-daemon-config-network"
+            zypper install libvirt-daemon-config-network
+        fi
+        $VIRSH net-define /usr/share/libvirt/networks/default.xml
+        if test "$?" != "0"; then
+            return 1
+        fi
+    fi
+
+    # Make sure the default network is started
+    net_started=$($VIRSH net-list | grep " default " | wc -l)
+    if test $net_started -eq 0; then
+        echo "Starting 'default' network"
+        $VIRSH net-start default
+        return $?
+    fi
+
+    return 0
+}
+
+# init_env
+#
+# Initialize the testing environment. This function makes sure libvirt lxc
+# driver is installed, libvirt properly started and the default network up
+# and running.
+#
+init_env ()
+{
+    # Make sure libvirt lxc driver is installed on the test machine
+    install_libvirt_lxc
+
+    # Is AppArmor started?
+    APPARMOR_STATUS=$(systemctl is-active apparmor)
+    APPARMOR_HAS_LIBVIRT=$(aa-status | grep libvirtd)
+    if test "$APPARMOR_STATUS" = "inactive"; then
+        systemctl start apparmor
+        systemctl restart libvirtd
+    else
+        if test -z "$APPARMOR_HAS_LIBVIRT"; then
+            systemctl restart apparmor
+            systemctl restart libvirtd
+        fi
+    fi
+
+    start_net
+    if test "$?" != "0"; then
+        echo "Failed to start default network"
+        return 1
+    fi
+}
+
+# restore_env
+#
+# Restore the testing environement as it was before the running
+# init_env.
+restore_env ()
+{
+    if test "$APPARMOR_STATUS" = "inactive"; then
+        systemctl stop apparmor
+    else
+        systemctl restart apparmor
+    fi
+
+    if test "$LIBVIRTD_STATUS" = "inactive"; then
+        systemctl stop libvirtd
+    else
+        systemctl restart libvirtd
+
+        if test $net_started -eq 0; then
+            $VIRSH net-destroy default
+        fi
+
+        if test $net_defined -eq 0; then
+            $VIRSH net-undefine default
+        fi
+    fi
+}
+
+
+# create_config
+#
+# Generate the container configuration
+#
+# $1 - ROOTFS: the path to the rootfs of the container
+# $2 - TEST_NAME: the name of the test. Will also be used as
+#      the name of the container.
+# $3 - INIT_TASK: the path to the application to run when
+#      starting the container. Default: '/sbin/init'
+# $4 - SECMODEL: the security model to use for the container.
+#      Can be one of 'none' or 'apparmor'. Note that AppArmor
+#      may not be handled by the host running the test.
+#      Default: 'none'
+create_config ()
+{
+    # Defaults
+    INIT_TASK="/sbin/init"
+    SECMODEL='none'
+
+    ROOTFS=$1
+    TEST_NAME=$2
+    CONFIG_FN=''
+    if test $# -ge 3; then
+        INIT_TASK=$3
+    fi
+    if test $# -ge 4; then
+        SECMODEL=$4
+    fi
+
+    case $SECMODEL in
+        apparmor)
+            SECLABEL="<seclabel type='dynamic' model='apparmor'/>"
+            ;;
+        *)
+            SECLABEL="<seclabel type='none'/>"
+            ;;
+    esac
+
+    cat > $ROOTFS/../${TEST_NAME}.xml << EOF
+<domain type='lxc'>
+  <name>$TEST_NAME</name>
+  <memory unit='KiB'>524288</memory>
+  <currentMemory unit='KiB'>524288</currentMemory>
+  <vcpu>1</vcpu>
+  <os>
+    <type arch='x86_64'>exe</type>
+    <init>$INIT_TASK</init>
+  </os>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>restart</on_crash>
+  <devices>
+    <emulator>/usr/lib64/libvirt/libvirt_lxc</emulator>
+    <filesystem>
+      <source dir='$ROOTFS'/>
+      <target dir='/'/>
+    </filesystem>
+    <interface type='network'>
+      <source network='default'/>
+    </interface>
+    <console type='pty'/>
+  </devices>
+  $SECLABEL
+</domain>
+EOF
+}
