@@ -1,0 +1,165 @@
+#!/bin/bash
+set -e
+
+SCRIPT_NAME=$(basename "$0")
+SCRIPT_FOLDER=$PWD/$(dirname "$0")
+
+DEFAULT_AUTHOR="$(git config user.name) <$(git config user.email)>"
+BRANCH="suse"
+REBASE_ON="origin/master"
+OBSPRJ=
+GIT_REPO=
+
+show_help()
+{
+    cat << EOF
+$SCRIPT_NAME -p path/to/obs/checkedout/libvirt -g path/to/target/git/repo
+
+Apply the patches from the Open Build Service libvirt project to the
+git repository.
+
+Note that the patches names are expected to start with the upstream
+commit ID is they have already been merged upstream. This helps
+sorting out the patches that need to be skipped. If the commit ID can't
+be found in the branch, the patch is applied.
+
+ARGUMENTS
+
+    -p Path to the checked out libvirt repository
+
+    -g Path to the git repository to apply the patches on
+
+    -a Default author to use for the patches that have no author infos.
+       The default value is read from the git configuration.
+       Default: $DEFAULT_AUTHOR
+
+    -b Name of the branch to create.
+       Default: $BRANCH
+
+    -r Name of the remote or local branch to rebase on.
+       Default: $REBASE_ON
+
+    -h Show this help
+EOF
+}
+
+while getopts "a:b:g:hp:r:" opt; do
+    case "$opt" in
+        a)
+            DEFAULT_AUTHOR="$OPTARG"
+            ;;
+        b)
+            BRANCH=$OPTARG
+            ;;
+        g)
+            GIT_REPO="$OPTARG"
+            ;;
+        h)
+            show_help
+            exit 1
+            ;;
+        p)
+            if [[ "$OPTARG" == /* ]]; then
+                OBSPRJ="$OPTARG"
+            else
+                OBSPRJ="$SCRIPT_FOLDER/$OPTARG"
+            fi
+            ;;
+        r)
+            REBASE_ON="$OPTARG"
+            ;;
+        :)
+            echo "option $OPTARG requires an argument"
+            show_help
+            exit 1
+            ;;
+        *)
+            echo "invalid argument $OPTARG"
+            show_help
+            exit 1
+    esac
+done
+
+if ! test -d "$OBSPRJ"; then
+    echo "Can't read OBS libvirt checked out project: $OBSPRJ"
+    exit 1
+fi
+
+if ! test -d "$GIT_REPO"; then
+    echo "Can't access libvirt git repository: $GIT_REPO"
+    exit 1
+fi
+
+build_files_commit()
+{
+# Copy the spec file
+cp $OBSPRJ/libvirt.spec libvirt.spec.in
+sed -e 's/^\(Version: \+\)[0-9.]\+/\1@VERSION@/' -i libvirt.spec.in
+sed -e 's/^\(Source0: \+\).\+$/\1http:\/\/libvirt.org\/sources\/%{?mainturl}libvirt-%{version}.tar.gz/' -i libvirt.spec.in
+sed -e '/^Source\(1\|2\|3\|99\):/d' -i libvirt.spec.in
+sed -e '/^Patch[0-9]\+:/d' -i libvirt.spec.in
+# TODO There are empty %if %endif left after this...
+sed -e '/^%patch[0-9]\+/d' -i libvirt.spec.in
+sed -e '/^install %SOURCE3/d' -i libvirt.spec.in
+
+# Copy libvirtd.init
+cp $OBSPRJ/libvirtd.init daemon/libvirtd.init.in
+sed -e 's!/usr/sbin!@sbindir@!' -i daemon/libvirtd.init.in
+sed -e 's!/etc/sysconfig!@sysconfdir@!' -i daemon/libvirtd.init.in
+sed -e 's!/var!@localstatedir@!' -i daemon/libvirtd.init.in
+
+cp $OBSPRJ/libvirtd-relocation-server.fw .
+
+# Actually create the commit
+git add libvirt.spec.in \
+        daemon/libvirtd.init.in \
+        libvirtd-relocation-server.fw
+git commit -m "Added spec and other build files"
+}
+
+apply_patches()
+{
+    # Loop on patches
+    for p in $(sed -n '{s/^Patch[0-9]\+: \+\(\.*\)/\1/ p}' $OBSPRJ/libvirt.spec); do
+        id=$(echo $p | cut -d '-' -f 1)
+        if git branch -a --contains $id 2>/dev/null | grep "$REBASE_ON" >/dev/null; then
+            echo "Skipping patch $p"
+        else
+            if ! git apply --check $OBSPRJ/$p; then
+                echo "Patch $p doesn't apply"
+                exit 1
+            fi
+
+            if grep '^From: ' $OBSPRJ/$p >/dev/null; then
+                cp $OBSPRJ/$p $p
+
+                # Cleanup the header
+                sed -e '0,/^$/{/^[^A-Za-z]/d}' -i $p
+            else
+                # Add a mail header for git am
+                d=$(date -R)
+                cat - $OBSPRJ/$p >$p << EOF
+From: $DEFAULT_AUTHOR
+Date: $d
+Subject: [PATCH] $p
+
+EOF
+            fi
+
+            git am $p
+            rm $p
+        fi
+    done
+}
+
+cd $GIT_REPO
+
+# This assumes upstream remote is called origin and that we rebase on master.
+# We may want to let the user change that
+git checkout -b $BRANCH $REBASE_ON
+
+build_files_commit
+apply_patches
+
+echo "$BRANCH branch prepared with patches from $OBSPRJ"
+exit 0
