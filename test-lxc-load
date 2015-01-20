@@ -36,6 +36,7 @@ ARGUMENTS
     -d  Path to the SLES 12 or openSUSE DVD ISO to use for the rootfs creation
     -w  Path to the directory containing all test data, including VM disk image.
     -n  Number of containers to start by the test/
+    -c  Clean up the whole working directory, even the packages cache
 
 EOF
 }
@@ -43,9 +44,12 @@ EOF
 dvdiso=
 workdir=
 nbcontainers=10
+clean_all="no"
 
-while getopts "d:hw:n:" opt; do
+while getopts "cd:hw:n:" opt; do
     case "$opt" in
+        c) clean_all="yes"
+           ;;
         d) dvdiso=$OPTARG
            ;;
         w) workdir=$OPTARG
@@ -78,8 +82,11 @@ if test -z "$workdir"; then
 fi
 
 # Cleanup previous workdir
-if test -e "$workdir"; then
+# Don't cleanup the cache unless requested
+if test "$clean_all" == "yes"; then
     rm -rf "$workdir"
+else
+    find "$workdir" -maxdepth 1 -mindepth -not -name "cache" --exec rm -rf {}\;
 fi
 
 # Create all containers
