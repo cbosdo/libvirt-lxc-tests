@@ -36,14 +36,16 @@ ARGUMENTS
 
     -d  Path to the SLES 12 or openSUSE DVD ISO to use for the rootfs creation
     -w  Path to the directory containing all test data, including VM disk image.
+    -s  Comma-separated names of tests to skip
 
 EOF
 }
 
 dvdiso=
 workdir=
+skiptests=
 
-while getopts "d:hw:" opt; do
+while getopts "d:hw:s:" opt; do
     case "$opt" in
         d) dvdiso=$OPTARG
            ;;
@@ -55,6 +57,8 @@ while getopts "d:hw:" opt; do
            ;;
         h) show_help
            exit 1
+           ;;
+        s) skiptests=$OPTARG
            ;;
         *) echo "invalid argument $OPTARG"
            show_help
@@ -216,7 +220,7 @@ keep_mknod_check ()
 
     # Make sure pscap is installed
     if test ! -e "/usr/bin/pscap"; then
-        zypper install libcap-ng-utils
+        zypper --non-interactive install libcap-ng-utils
     fi
 
     CONTROLLER_PID=$($VIRSH domid $TEST_NAME)
@@ -256,7 +260,7 @@ caps_allow_check ()
 
     # Make sure pscap is installed
     if test ! -e "/usr/bin/pscap"; then
-        zypper install libcap-ng-utils
+        zypper --non-interactive install libcap-ng-utils
     fi
 
     CONTROLLER_PID=$($VIRSH domid $TEST_NAME)
@@ -488,6 +492,11 @@ TESTS="distro_nosec \
 
 
 for TEST in $TESTS; do
+    if test $(echo $skiptests | sed -n "/\(^\|,\)$TEST\(,\|$\)/p" | wc -l) -eq 1; then
+        echo -e "\n--------\n$TEST\n--------"
+        echo "-> SKIPPED"
+        continue
+    fi
     run_test "$TEST"
     if test $? -ne 0; then
         RESULT=1
