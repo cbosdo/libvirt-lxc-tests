@@ -419,8 +419,8 @@ distro_ipconfig_setup ()
     IPS=$(cat << EOF
       <ip address='192.168.122.5' family='ipv4' prefix='24'/>
       <ip address='192.168.122.6' family='ipv4' prefix='24'/>
-      <route family='ipv4' via='192.168.122.1'/>
-      <route family='ipv4' via='192.168.122.1' address='192.168.125.0' prefix='24'/>
+      <route family='ipv4' address='0.0.0.0' gateway='192.168.122.1'/>
+      <route family='ipv4' gateway='192.168.122.1' address='192.168.125.0' prefix='24'/>
 EOF
 )
     insert_before "$CONFIG" "/<\/interface>/" "$IPS"
