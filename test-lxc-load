@@ -86,11 +86,12 @@ fi
 if test "$clean_all" == "yes"; then
     rm -rf "$workdir"
 else
-    find "$workdir" -maxdepth 1 -mindepth -not -name "cache" --exec rm -rf {}\;
+    find "$workdir" -maxdepth 1 -mindepth 1 -not -name "cache" -exec rm -rf {} \;
 fi
 
 # Create all containers
 I=0
+echo "container #;time;unit" > "$workdir/startup-times.csv"
 while test $I -lt $nbcontainers; do
     NAME="container_$I"
 
@@ -114,7 +115,7 @@ while test $I -lt $nbcontainers; do
     TRY="0"
     while test $TRY -lt 15; do
         STARTED=$($VIRSH lxc-enter-namespace $NAME --cmd \
-                         /usr/bin/systemctl is-active default.target i2>/dev/null)
+                         /usr/bin/systemctl is-active default.target 2>/dev/null)
         if test "$STARTED" == "active"; then
             break
         fi
@@ -123,7 +124,8 @@ while test $I -lt $nbcontainers; do
     done
 
     # Extract a few useful data about the container start
-    $VIRSH lxc-enter-namespace $NAME --cmd /usr/bin/systemd-analyze time >"$workdir/${NAME}.data"
+    $VIRSH lxc-enter-namespace $NAME --cmd /usr/bin/systemd-analyze time | \
+           sed -n -e '{s/^[^=]\+= \([0-9]\+\)\(m\?s\)$/1;\1;\2/ p}' >> "$workdir/startup-times.csv"
 
     I=$(expr $I + 1)
 done
