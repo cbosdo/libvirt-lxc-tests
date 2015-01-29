@@ -40,9 +40,13 @@ create_rootfs ()
         case $PRODUCT in
             openSUSE)
                 zypper --root "$ROOTFS" --non-interactive in --no-recommends --auto-agree-with-licenses -t pattern base
+                zypper --root "$ROOTFS" --non-interactive in iproute2
+                echo "pts/0" >> "$ROOTFS/etc/securetty"
                 ;;
             SLE*)
                 zypper --root "$ROOTFS" --non-interactive in --no-recommends --auto-agree-with-licenses -t pattern Minimal
+                zypper --root "$ROOTFS" --non-interactive in iproute2
+                echo "pts/0" >> "$ROOTFS/etc/securetty"
                 ;;
             *)
                 echo "Unhandled distribution: $PRODUCT"
