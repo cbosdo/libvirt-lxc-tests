@@ -138,7 +138,7 @@ run_test ()
     if function_defined ${TEST_NAME}_teardown; then
         ${TEST_NAME}_teardown $TEST_NAME
     fi
-    
+
     if test "$RUN_RESULT" != "0"; then
         echo "-> FAIL"
         return 1
@@ -146,4 +146,9 @@ run_test ()
 
     echo "-> OK"
     return 0
+}
+
+wait_file ()
+{
+    timeout 30s bash -c "while ! test -e \"$1\"; do sleep 0.5; done"
 }
