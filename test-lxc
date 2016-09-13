@@ -123,7 +123,10 @@ default_teardown()
 distro_nosec_setup ()
 {
     TEST_NAME=$1
-    create_config "$workdir/rootfs" $TEST_NAME "/sbin/init" "none"
+    unset INIT_TASK
+    unset INIT_TASK_ARGS
+    unset SECMODEL
+    create_config "$workdir/rootfs" $TEST_NAME
     default_setup $TEST_NAME
 }
 
@@ -158,7 +161,10 @@ distro_nosec_check ()
 distro_apparmor_setup ()
 {
     TEST_NAME=$1
-    create_config "$workdir/rootfs" $TEST_NAME "/sbin/init" "apparmor"
+    unset INIT_TASK
+    unset INIT_TASK_ARGS
+    SECMODEL="apparmor"
+    create_config "$workdir/rootfs" $TEST_NAME
     default_setup $TEST_NAME
 }
 
@@ -192,7 +198,10 @@ keep_mknod_setup ()
 {
     TEST_NAME=$1
 
-    create_config "$workdir/rootfs" $TEST_NAME "/bin/bash" "none"
+    INIT_TASK="/bin/bash"
+    unset INIT_TASK_ARGS
+    unset SECMODEL
+    create_config "$workdir/rootfs" $TEST_NAME
 
     # Custom configuration for the test
     CONFIG=$workdir/${TEST_NAME}.xml
@@ -233,7 +242,10 @@ caps_allow_setup ()
 {
     TEST_NAME=$1
 
-    create_config "$workdir/rootfs" $TEST_NAME "/bin/bash" "none"
+    INIT_TASK="/bin/bash"
+    unset INIT_TASK_ARGS
+    unset SECMODEL
+    create_config "$workdir/rootfs" $TEST_NAME
 
     # Custom configuration for the test
     CONFIG=$workdir/${TEST_NAME}.xml
@@ -273,7 +285,10 @@ ifname_setup ()
 {
     TEST_NAME=$1
 
-    create_config "$workdir/rootfs" $TEST_NAME "/bin/bash" "none"
+    INIT_TASK="/bin/bash"
+    INIT_TASK_ARGS=(-c 'ip a >/tmp/output.log')
+    unset SECMODEL
+    create_config "$workdir/rootfs" $TEST_NAME
 
     # Custom configuration for the test
     CONFIG=$workdir/${TEST_NAME}.xml
@@ -289,24 +304,32 @@ EOF
 
 ifname_teardown ()
 {
-    default_teardown $1
+    rm "$workdir/rootfs/tmp/output.log"
 }
 
 ifname_check ()
 {
     TEST_NAME=$1
 
-    $VIRSH lxc-enter-namespace --noseclabel $TEST_NAME \
-          --cmd /usr/bin/test -e /proc/sys/net/ipv4/conf/myeth0
+    wait_file "$workdir/rootfs/tmp/output.log"
+    if test "$?" != "0"; then
+        echo "ROOTFS/tmp/output.log file not created by the container"
+        return 1
+    fi
 
-    assert "/proc/sys/net/ipv4/conf/myeth0 doesn't exist" "0" "$?"
+    local OUTPUT=$(cat "$workdir/rootfs/tmp/output.log")
+    assert_match "/proc/sys/net/ipv4/conf/myeth0 doesn't exist" \
+                 "/myeth0/" "$OUTPUT"
 }
 
 distro_userns_setup ()
 {
     TEST_NAME=$1
 
-    create_config "$workdir/rootfs" $TEST_NAME "/sbin/init" "none"
+    unset INIT_TASK
+    unset INIT_TASK_ARGS
+    unset SECMODEL
+    create_config "$workdir/rootfs" $TEST_NAME
 
     # Custom configuration for the test
     CONFIG=$workdir/${TEST_NAME}.xml
@@ -375,7 +398,11 @@ BOOTPROTO=dhcp
 EOF
 
     # Normal config
-    create_config "$workdir/rootfs" $TEST_NAME "/sbin/init" "none"
+    unset INIT_TASK
+    unset INIT_TASK_ARGS
+    unset SECMODEL
+    add_service "$workdir/rootfs" "ip_check" "ip -f inet a show eth0 >/tmp/output.log" "network.service"
+    create_config "$workdir/rootfs" $TEST_NAME
     default_setup $TEST_NAME
 }
 
@@ -385,30 +412,25 @@ distro_ip_teardown ()
     ROOTFS=$workdir/rootfs
     rm $ROOTFS/etc/sysconfig/network/ifcfg-eth0
     default_teardown $1
+    remove_service "$ROOTFS" "ip_check"
+    rm "$ROOTFS/tmp/output.log"
 }
 
 distro_ip_check ()
 {
     TEST_NAME=$1
 
-    TRY="0"
-    CHECK_RESULT=1
-    while test $TRY -lt 30; do
-        IP=$($VIRSH lxc-enter-namespace --noseclabel $TEST_NAME \
-             /sbin/ip -f inet a show eth0)
-        assert_match "" "/ inet /" "$IP"
-        CHECK_RESULT=$?
-        if test $CHECK_RESULT -eq 0; then
-            return 0
-        fi
-        TRY=$(expr $TRY + 1)
-        sleep 1s
-    done
-    echo "No IP set"
-    return 1
+    wait_file "$workdir/rootfs/tmp/output.log"
+    if test "$?" != "0"; then
+        echo "ROOTFS/tmp/output.log file not created by the container"
+        return 1
+    fi
+
+    local IP=$(cat "$workdir/rootfs/tmp/output.log")
+    assert_match "No IP set" "/ inet /" "$IP"
 }
 
-distro_ipconfig_setup ()
+ipconfig_setup ()
 {
     TEST_NAME=$1
     ROOTFS=$workdir/rootfs
@@ -416,7 +438,10 @@ distro_ipconfig_setup ()
     # Make sure we have iproute2 in the container
     zypper --root "$ROOTFS" --non-interactive install iproute2
 
-    create_config "$workdir/rootfs" $TEST_NAME "/sbin/init" "none"
+    INIT_TASK="/bin/bash"
+    INIT_TASK_ARGS=(-c 'ip -f inet a show eth0 >/tmp/ip.log; ip route >/tmp/route.log')
+    unset SECMODEL
+    create_config "$workdir/rootfs" $TEST_NAME
 
     # Custom configuration for the test
     CONFIG=$workdir/${TEST_NAME}.xml
@@ -431,18 +456,24 @@ EOF
     default_setup $TEST_NAME
 }
 
-distro_ipconfig_teardown ()
+ipconfig_teardown ()
 {
-    default_teardown $1
+    rm "$workdir/rootfs/tmp/ip.log"
+    rm "$workdir/rootfs/tmp/route.log"
 }
 
-distro_ipconfig_check ()
+ipconfig_check ()
 {
     TEST_NAME=$1
 
+    wait_file "$workdir/rootfs/tmp/route.log"
+    if test "$?" != "0"; then
+        echo "ROOTFS/tmp/route.log file not created by the container"
+        return 1
+    fi
+
     # Check ips
-    IPS=$($VIRSH lxc-enter-namespace --noseclabel $TEST_NAME \
-         /sbin/ip -f inet a show eth0)
+    local IPS=$(cat "$workdir/rootfs/tmp/ip.log")
     assert_match "192.168.122.5/24 IP not set" "/192\.168\.122\.5\/24/" "$IPS"
     if test $? -ne 0; then
         return 1
@@ -454,8 +485,7 @@ distro_ipconfig_check ()
     fi
 
     # Check routes
-    ROUTES=$($VIRSH lxc-enter-namespace --noseclabel $TEST_NAME \
-             /sbin/ip route)
+    local ROUTES=$(cat "$workdir/rootfs/tmp/route.log")
     assert_match "default route not set" \
                  "/default via 192\.168\.122\.1 dev eth0/" "$ROUTES"
     if test $? -ne 0; then
@@ -485,10 +515,10 @@ TESTS="distro_nosec \
       distro_apparmor \
       keep_mknod \
       caps_allow \
-      ifname \
       distro_userns \
       distro_ip \
-      distro_ipconfig"
+      ipconfig \
+      ifname"
 
 
 for TEST in $TESTS; do

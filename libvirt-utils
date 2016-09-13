@@ -166,27 +166,34 @@ restore_env ()
 # $1 - ROOTFS: the path to the rootfs of the container
 # $2 - TEST_NAME: the name of the test. Will also be used as
 #      the name of the container.
-# $3 - INIT_TASK: the path to the application to run when
+#
+# Optional variables:
+#
+#    - INIT_TASK: the path to the application to run when
 #      starting the container. Default: '/sbin/init'
-# $4 - SECMODEL: the security model to use for the container.
+#    - INIT_TASK_ARGS: array of arguments for INIT_TASK.
+#      Default: ().
+#    - SECMODEL: the security model to use for the container.
 #      Can be one of 'none' or 'apparmor'. Note that AppArmor
 #      may not be handled by the host running the test.
 #      Default: 'none'
 create_config ()
 {
     # Defaults
-    INIT_TASK="/sbin/init"
-    SECMODEL='none'
+    if test ! $INIT_TASK; then
+        INIT_TASK="/sbin/init"
+    fi
+
+    if test ! $INIT_TASK_ARGS; then
+        INIT_TASK_ARGS=()
+    fi
+    if test ! $SECMODEL; then
+        SECMODEL='none'
+    fi
 
     ROOTFS=$1
     TEST_NAME=$2
     CONFIG_FN=''
-    if test $# -ge 3; then
-        INIT_TASK=$3
-    fi
-    if test $# -ge 4; then
-        SECMODEL=$4
-    fi
 
     case $SECMODEL in
         apparmor)
@@ -197,6 +204,10 @@ create_config ()
             ;;
     esac
 
+    INIT_ARGS=$(for arg in "${INIT_TASK_ARGS[@]}"; do
+                    printf "    <initarg>$arg</initarg>\n"
+                done)
+
     cat > $ROOTFS/../${TEST_NAME}.xml << EOF
 <domain type='lxc'>
   <name>$TEST_NAME</name>
@@ -206,6 +217,7 @@ create_config ()
   <os>
     <type arch='x86_64'>exe</type>
     <init>$INIT_TASK</init>
+$INIT_ARGS
   </os>
   <on_poweroff>destroy</on_poweroff>
   <on_reboot>restart</on_reboot>
