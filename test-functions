@@ -152,3 +152,50 @@ wait_file ()
 {
     timeout 30s bash -c "while ! test -e \"$1\"; do sleep 0.5; done"
 }
+
+# add_service
+#
+# Add a systemd service running the provided command.
+#
+# $1 - ROOTFS: the path to the rootfs of the container
+# $2 - NAME: the service name. Will be prefixed by 'lxc-test_'
+# $3 - COMMAND: command to run as a string
+# $4 - AFTER: name of the service to wait for
+add_service ()
+{
+    local ROOTFS="$1"
+    local SERVICE_NAME="$2"
+    local SERVICE_COMMAND="$3"
+    local SERVICE_AFTER="$4"
+
+    cat > $ROOTFS/usr/lib/systemd/system/test-lxc_$SERVICE_NAME.service << EOF
+[Unit]
+Description=Test-lxc $SERVICE_NAME
+After=$SERVICE_AFTER
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c "$SERVICE_COMMAND"
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl --root=$ROOTFS enable test-lxc_$SERVICE_NAME
+}
+
+# remove_service
+#
+# Removes a systemd service from the rootfs
+#
+# $1 - ROOTFS: the path to the rootfs of the container
+# $2 - NAME: the service name. Will be prefixed by 'lxc-test_'
+remove_service ()
+{
+    local ROOTFS="$1"
+    local SERVICE_NAME="$2"
+
+    systemctl --root=$ROOTFS disable test-lxc_$SERVICE_NAME
+
+    rm $ROOTFS/usr/lib/systemd/system/test-lxc_$SERVICE_NAME.service
+}
