@@ -115,11 +115,11 @@ init_env ()
     APPARMOR_STATUS=$(systemctl is-active apparmor)
     APPARMOR_HAS_LIBVIRT=$(aa-status | grep libvirtd)
     if test "$APPARMOR_STATUS" = "inactive"; then
-        systemctl start apparmor
+        rcapparmor start
         systemctl restart libvirtd
     else
         if test -z "$APPARMOR_HAS_LIBVIRT"; then
-            systemctl restart apparmor
+            rcapparmor restart
             systemctl restart libvirtd
         fi
     fi
@@ -138,9 +138,9 @@ init_env ()
 restore_env ()
 {
     if test "$APPARMOR_STATUS" = "inactive"; then
-        systemctl stop apparmor
+        rcapparmor stop
     else
-        systemctl restart apparmor
+        rcapparmor restart
     fi
 
     if test "$LIBVIRTD_STATUS" = "inactive"; then
