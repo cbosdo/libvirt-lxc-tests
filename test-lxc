@@ -190,6 +190,7 @@ distro_apparmor_check ()
     fi
 
     # Check that the whole distro has started
+    sleep 2
     CHILDREN_PS=$(ps --ppid $PROCESS_PID -h)
     assert_match "/sbin/init has no child processes" "/^.\+$/" "$CHILDREN_PS"
 }
